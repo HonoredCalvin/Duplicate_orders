@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Duplicate Order Prevention: Live Dashboard</title>
+<style>
+body{font-family:Arial,sans-serif;margin:0;padding:20px;background:#f6f4ee;color:#1b1f2a}
+h1{font-size:22px;margin:0 0 12px} h2{font-size:16px;margin:0 0 8px}
+.row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.card{background:#fff;border:1px solid #d9d6cc;border-radius:10px;padding:14px;flex:1;min-width:260px}
+.pill{display:inline-block;padding:3px 10px;border-radius:12px;font-size:13px;margin-right:6px;color:#fff}
+.up{background:#2e8b57}.down{background:#b22222}.warn{background:#c77d00}
+button{margin:3px 3px 3px 0;padding:8px 12px;border:0;border-radius:6px;background:#14213d;color:#fff;cursor:pointer}
+button.red{background:#b22222} button.gray{background:#666}
+select,input{padding:6px;margin-right:6px}
+.big{font-size:26px;font-weight:700} .bad{color:#b22222} .good{color:#2e8b57}
+#log{font:12px monospace;background:#14213d;color:#e8e8e8;padding:10px;border-radius:8px;height:200px;overflow:auto;white-space:pre-wrap}
+table{border-collapse:collapse;width:100%;font-size:13px} td,th{border-bottom:1px solid #e3e0d6;padding:4px;text-align:left}
+</style></head><body>
+<h1>Duplicate Order Prevention: Live Dashboard <span id="mode" class="pill warn"></span></h1>
+<div class="row"><div class="card"><h2>Replicas (gateway health, failovers)</h2><div id="replicas"></div><div id="gw"></div></div>
+<div class="card"><h2>Counters</h2>
+<div>Orders in DB: <span id="orders" class="big">0</span></div>
+<div>Duplicate orders: <span id="dups" class="big">0</span></div>
+<div>Duplicates blocked: <span id="blocked" class="big">0</span> <small>(key reuse rejected: <span id="reuse">0</span>)</small></div>
+<div>Payments: <span id="pay" class="big">0</span></div></div>
+<div class="card"><h2>Stock</h2><div id="stock"></div></div></div>
+<div class="card" style="margin-bottom:12px"><h2>Place an order</h2>
+Buyer <input id="buyer" value="Alice" size="8">
+Item <select id="item"><option value="1">Laptop</option><option value="2">Smartphone</option><option value="3">Headphones</option><option value="4">Backpack</option><option value="5">Sneakers</option></select>
+Qty <input id="qty" type="number" value="1" min="1" style="width:50px"><br>
+<button onclick="send(1)">Place order</button>
+<button onclick="send(2)">Double click (same key x2)</button>
+<button onclick="send(5)">Retry storm (same key x5)</button>
+<button onclick="reuse()">Same key, different data</button>
+<button class="gray" onclick="reset()">Reset demo data</button><br>
+<b>Failures:</b>
+<button class="red" onclick="adm('a','crash')">Crash A</button><button class="red" onclick="adm('b','crash')">Crash B</button>
+<button class="red" onclick="adm('a','slow')">Slow A (4 s)</button><button class="gray" onclick="adm('a','heal')">Heal A</button></div>
+<div class="row"><div class="card"><h2>Flagged duplicate attempts</h2><table id="dup"><tr><th>Time</th><th>Order</th><th>Kind</th><th>Buyer</th><th>Server</th></tr></table></div>
+<div class="card"><h2>Log</h2><div id="log"></div></div></div>
+<script>
+const $=id=>document.getElementById(id);
+const uid=()=>crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random().toString(16).slice(2);
+function log(m){const l=$('log');l.textContent+=new Date().toLocaleTimeString()+'  '+m+'\n';l.scrollTop=l.scrollHeight}
+function payload(key,qty){return {client_request_id:key,customer:$('buyer').value,product_id:+$('item').value,qty:qty??+$('qty').value}}
+async function post(key,body){
+  try{const r=await fetch('/orders',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(body)});
+    const j=await r.json();log(r.status+' via '+r.headers.get('X-Served-By')+' '+JSON.stringify(j));}
+  catch(e){log('network error '+e)}
+}
+async function send(n){const k=uid(),b=payload(k);log('sending '+n+'x with key '+k.slice(0,8));await Promise.all(Array.from({length:n},()=>post(k,b)));refresh()}
+async function reuse(){const k=uid();await post(k,payload(k,1));await post(k,payload(k,3));refresh()}
+async function adm(n,a){await fetch('/gateway/admin/'+n+'/'+a,{method:'POST'});log(a+' replica '+n);setTimeout(refresh,500)}
+async function reset(){await fetch('/gateway/reset',{method:'POST'});log('demo data reset');refresh()}
+async function refresh(){
+  try{const g=await (await fetch('/gateway/status')).json();
+    $('replicas').innerHTML=g.replicas.map(r=>'<span class="pill '+(r.up?'up':'down')+'">'+r.name.toUpperCase()+(r.up?' up':' down')+(r.delay_ms?' slow':'')+(r.breaker_open?' (breaker)':'')+'</span>').join('');
+    $('gw').textContent='Requests: '+g.requests+'   Failovers: '+g.failovers;
+    $('mode').textContent=(g.replicas.find(r=>r.mode)||{}).mode||'';}catch(e){}
+  try{const s=await (await fetch('/stats')).json();
+    $('orders').textContent=s.orders;$('dups').textContent=s.duplicate_orders;$('dups').className='big '+(s.duplicate_orders?'bad':'good');
+    $('blocked').textContent=s.blocked+s.cache_blocked;$('reuse').textContent=s.key_reuse_rejected;$('pay').textContent=s.payments;
+    $('stock').innerHTML=s.stock.map(x=>x.name+': <b>'+x.stock+'</b>').join('<br>');}catch(e){}
+  try{const d=await (await fetch('/duplicates')).json();
+    $('dup').innerHTML='<tr><th>Time</th><th>Order</th><th>Kind</th><th>Buyer</th><th>Server</th></tr>'+d.map(x=>'<tr><td>'+x.at+'</td><td>#'+x.order_id+'</td><td>'+x.kind+'</td><td>'+x.customer+'</td><td>'+x.server+'</td></tr>').join('');}catch(e){}
+}
+refresh();setInterval(refresh,2000);
+</script></body></html>

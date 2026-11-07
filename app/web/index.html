@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duplicate-Safe Shop</title>
+<style>
+:root{--navy:#14213d;--orange:#e07a1f;--bg:#f4f2ec;--ok:#2e8b57;--bad:#c0392b}
+*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:var(--bg);color:var(--navy)}
+header{background:var(--navy);color:#fff;padding:14px 20px;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+header h1{margin:0;font-size:20px;flex:1}.pill{padding:5px 11px;border-radius:99px;background:var(--ok);font-size:13px;font-weight:700}
+.pill.off{background:var(--bad)}main{max-width:1000px;margin:auto;padding:16px;display:grid;gap:16px}
+.box{background:#fff;border-radius:12px;padding:16px;box-shadow:0 1px 4px #0002}h2{margin:0 0 10px;font-size:17px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}.item{border:1px solid #ddd;border-radius:10px;padding:10px}
+button{padding:7px 12px;border:0;border-radius:8px;background:var(--orange);color:#fff;font-weight:700;cursor:pointer}button.s{background:#e4e0d4;color:var(--navy)}
+input[type=text]{padding:7px;border:1px solid #ccc;border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px}
+td,th{padding:6px;border-bottom:1px solid #eee;text-align:left}.dup{background:#fdecea}#log{font:13px monospace;max-height:150px;overflow:auto;white-space:pre-wrap}
+</style></head><body>
+<header><h1>Duplicate-Safe Shop</h1><span id="mode" class="pill">mode</span><span id="s1" class="pill">server 1</span><span id="s2" class="pill">server 2</span></header>
+<main>
+<div class="box"><h2>Buy</h2>
+<input id="who" type="text" value="Alice" placeholder="Your name"> <label><input id="twice" type="checkbox"> send every order twice (double click)</label>
+<div id="products" class="grid" style="margin-top:10px"></div></div>
+<div class="box"><h2>Failure demos</h2>
+<button class="s" onclick="adm('/admin/crash/1')">Crash server 1</button> <button class="s" onclick="adm('/admin/crash/2')">Crash server 2</button>
+<button class="s" onclick="adm('/admin/delay/1/4000')">Make server 1 slow (4 s)</button> <button class="s" onclick="adm('/admin/delay/1/0')">Normal speed</button>
+<button class="s" onclick="adm('/admin/reset-stock')">Reset stock</button><div id="log"></div></div>
+<div class="box"><h2>Orders</h2><table><thead><tr><th>#</th><th>Buyer</th><th>Item</th><th>Qty</th><th>Status</th><th>Blocked duplicates</th></tr></thead><tbody id="orders"></tbody></table></div>
+<div class="box" style="border-left:8px solid var(--bad)"><h2>Flagged duplicate attempts</h2><table><thead><tr><th>Order</th><th>Kind</th><th>Buyer</th><th>Item</th><th>Server</th></tr></thead><tbody id="dups"></tbody></table></div>
+</main>
+<script>
+const $=id=>document.getElementById(id),log=m=>{$('log').textContent=new Date().toLocaleTimeString()+' '+m+'\n'+$('log').textContent};
+const j=async(p,o)=>{const r=await fetch(p,o);let b={};try{b=await r.json()}catch(e){}return{s:r.status,b,by:r.headers.get('X-Served-By')}};
+async function adm(p){const r=await j(p,{method:'POST'});log(p+' -> '+r.s)}
+async function buy(id,name){const key=crypto.randomUUID(),body=JSON.stringify({customer:$('who').value||'guest',product_id:id,quantity:1});
+ const one=()=>j('/orders',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body});
+ const rs=await Promise.all($('twice').checked?[one(),one()]:[one()]);
+ rs.forEach((r,i)=>log(name+' request '+(i+1)+': '+r.s+(r.b.duplicate?' DUPLICATE BLOCKED':'')+(r.b.error?' '+r.b.error:'')+(r.by?' via '+r.by.replace('http://',''):'')));refresh()}
+const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+async function refresh(){
+ try{const st=(await j('/gateway/status')).b;$('mode').textContent='mode: '+st.mode;st.backends.forEach((b,i)=>{const e=$('s'+(i+1));e.className='pill'+(b.circuit_open?' off':'');e.textContent='server '+(i+1)+(b.circuit_open?' down':' up')})}catch(e){}
+ const p=(await j('/products')).b;if(Array.isArray(p))$('products').innerHTML=p.map(x=>`<div class="item"><b>${esc(x.name)}</b><br>${x.price.toLocaleString()} UGX<br>stock ${x.stock}<br><button ${x.stock<1?'disabled':''} onclick="buy(${x.id},'${esc(x.name)}')">Buy</button></div>`).join('');
+ const o=(await j('/orders')).b;if(Array.isArray(o))$('orders').innerHTML=o.map(x=>`<tr class="${x.duplicate_attempts>0?'dup':''}"><td>${x.id}</td><td>${esc(x.customer)}</td><td>${esc(x.item)}</td><td>${x.quantity}</td><td>${x.status}</td><td>${x.duplicate_attempts}</td></tr>`).join('');
+ const d=(await j('/duplicates')).b;if(Array.isArray(d))$('dups').innerHTML=d.map(x=>`<tr><td>${x.order_id}</td><td>${x.kind}</td><td>${esc(x.customer)}</td><td>${esc(x.item)}</td><td>${esc(x.server)}</td></tr>`).join('')}
+refresh();setInterval(refresh,2000);
+</script></body></html>
